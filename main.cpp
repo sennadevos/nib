@@ -507,6 +507,9 @@ static QString focusScript()
     var sel = getSelection();
     if (!sel.rangeCount) return;
     var r = sel.getRangeAt(0).getBoundingClientRect();
+    /* A collapsed or off-tree range measures as all zeros; scrolling to
+       "recenter" that just walks the page upward one keypress at a time. */
+    if (!r.width && !r.height && !r.top && !r.bottom) return;
     if (r.top < 40 || r.bottom > innerHeight - 40)
       window.__nibScroll(0, r.top - innerHeight / 2, false);
   }
@@ -864,12 +867,20 @@ bool Browser::vimReady() const
 	return p && p->focus()->ready && !p->focus()->editable;
 }
 
+/*
+ * Also tell the (current) page to drop any hint overlay or caret. Without
+ * this, switching away from a tab resets our mode but leaves the page's
+ * selection painted — on return it still looks like visual mode while j/k
+ * have gone back to scrolling.
+ */
 void Browser::resetVimState()
 {
 	m_vimMode = VimNormal;
 	m_pendingG = false;
 	m_pendingY = false;
 	m_count = 0;
+	runJs(QStringLiteral(
+	    "typeof __nibModeExit==='function'&&__nibModeExit()"));
 }
 
 void Browser::startHint(const QString &action)
