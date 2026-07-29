@@ -1103,23 +1103,23 @@ bool Browser::handleVim(QKeyEvent *ke)
 
 	switch (key) {
 	case Qt::Key_J:
-		runJs(QStringLiteral("__nibScroll(0,%1,false)").arg(SCROLL_STEP));
+		runJs(QStringLiteral("__nibScroll(0,%1,true)").arg(SCROLL_STEP));
 		return true;
 	case Qt::Key_K:
-		runJs(QStringLiteral("__nibScroll(0,%1,false)").arg(-SCROLL_STEP));
+		runJs(QStringLiteral("__nibScroll(0,%1,true)").arg(-SCROLL_STEP));
 		return true;
 	case Qt::Key_H:
 		if (shift) {
 			if (v) v->back();
 		} else {
-			runJs(QStringLiteral("__nibScroll(%1,0,false)").arg(-SCROLL_STEP));
+			runJs(QStringLiteral("__nibScroll(%1,0,true)").arg(-SCROLL_STEP));
 		}
 		return true;
 	case Qt::Key_L:
 		if (shift) {
 			if (v) v->forward();
 		} else {
-			runJs(QStringLiteral("__nibScroll(%1,0,false)").arg(SCROLL_STEP));
+			runJs(QStringLiteral("__nibScroll(%1,0,true)").arg(SCROLL_STEP));
 		}
 		return true;
 	case Qt::Key_D:

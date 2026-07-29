@@ -11,6 +11,11 @@ NIB=${NIB:-./nib}
 TMP=$(mktemp -d)
 PORT=${PORT:-8099}
 export QT_QPA_PLATFORM=offscreen
+# GPU compositing is pointless offscreen, and on some hosts a real smooth
+# scroll animation segfaults QtWebEngine's viz compositor
+# (CompositorFrameSinkSupport::UpdateNeedsBeginFramesInternal) under the
+# offscreen platform. Software rasterization avoids that path.
+export QTWEBENGINE_CHROMIUM_FLAGS="--disable-gpu ${QTWEBENGINE_CHROMIUM_FLAGS:-}"
 fails=0
 
 cleanup() { [ -n "${SRV:-}" ] && kill "$SRV" 2>/dev/null; rm -rf "$TMP"; }
