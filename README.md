@@ -207,6 +207,10 @@ Persistent cookies, disk cache, popups from script blocked (user-initiated
 outright, autoplay requires a gesture, bad TLS certificates rejected with a
 status message. Downloads go to `~/Downloads` without prompting.
 
+Clipboard is one-way: a page may **write** it (so "copy" buttons work) but
+never read it — `JavascriptCanPaste` stays off and clipboard-read permission
+requests are denied, so no site can sniff what you copied elsewhere.
+
 No bookmarks, no history UI, no session restore, no adblock. Hints and the
 caret run in the top frame only — elements inside iframes are part of the
 page, not nib's.
@@ -268,7 +272,7 @@ path proven above, but the individual handlers are unverified.
 ### Testing without hijacking your session
 
 ```sh
-make test          # 21 checks, offscreen, no window ever appears
+make test          # 23 checks, offscreen, no window ever appears
 ```
 
 `test.sh` sets `QT_QPA_PLATFORM=offscreen` and points `XDG_DATA_HOME` /

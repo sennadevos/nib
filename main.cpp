@@ -713,6 +713,7 @@ private:
 	void            hintTest(QWebEngineView *view);
 	void            caretTest(QWebEngineView *view);
 	void            caretObstacleTest(QWebEngineView *view);
+	void            jsClipTest(QWebEngineView *view);
 	void            sendKey(int key, Qt::KeyboardModifiers mods,
 	                    const QString &text = QString());
 	bool            m_tested = false;   /* debug tests run once per window */
@@ -1034,7 +1035,7 @@ void Browser::selfTest(QWebEngineView *view)
 	const QByteArray mode = qgetenv("NIB_DEBUG");
 	if (mode == "keys" || mode == "bounds" || mode == "ctrl" ||
 	    mode == "app" || mode == "hint" || mode == "caret" ||
-	    mode == "caretj") {
+	    mode == "caretj" || mode == "jsclip") {
 		m_tested = true;
 		if (mode == "keys")
 			keyTest(view);
@@ -1048,6 +1049,8 @@ void Browser::selfTest(QWebEngineView *view)
 			caretTest(view);
 		else if (mode == "caretj")
 			caretObstacleTest(view);
+		else if (mode == "jsclip")
+			jsClipTest(view);
 		else
 			appTest(view);
 	}
@@ -1412,6 +1415,41 @@ void Browser::caretObstacleTest(QWebEngineView *view)
 			fprintf(stderr, "nib: caretj %s %s\n", qUtf8Printable(s),
 			    s.contains(QStringLiteral("ok=true")) ? "OK" : "FAIL");
 			fflush(stderr);
+		});
+	});
+}
+
+/*
+ * A page's own "copy" button must reach the clipboard: jsclip.html runs
+ * document.execCommand('copy') on load, which only works with
+ * JavascriptCanAccessClipboard on. Reads stay blocked — also asserted, by
+ * calling navigator.clipboard.readText() and expecting rejection.
+ */
+void Browser::jsClipTest(QWebEngineView *view)
+{
+	auto *page = qobject_cast<Page *>(view->page());
+	if (!page)
+		return;
+	QTimer::singleShot(800, this, [page] {
+		const QString got =
+		    QGuiApplication::clipboard()->text().trimmed();
+		fprintf(stderr, "nib: jsclip copy='%s' %s\n", qUtf8Printable(got),
+		    got == QStringLiteral("copied-ok") ? "OK" : "FAIL");
+		fflush(stderr);
+		page->runJavaScript(QStringLiteral(
+		    "navigator.clipboard.readText().then("
+		    "function(t){window.__nibClipRead='read:'+t},"
+		    "function(e){window.__nibClipRead='denied'})"),
+		    QWebEngineScript::MainWorld);
+		QTimer::singleShot(600, page, [page] {
+			page->runJavaScript(QStringLiteral("window.__nibClipRead||'pending'"),
+			    QWebEngineScript::MainWorld, [](const QVariant &v) {
+				const QString r = v.toString();
+				fprintf(stderr, "nib: jsclip read=%s %s\n",
+				    qUtf8Printable(r),
+				    r == QStringLiteral("denied") ? "OK" : "FAIL");
+				fflush(stderr);
+			});
 		});
 	});
 }
@@ -2174,6 +2212,10 @@ int main(int argc, char **argv)
 	s->setAttribute(QWebEngineSettings::FullScreenSupportEnabled, true);
 	s->setAttribute(QWebEngineSettings::PlaybackRequiresUserGesture, true);
 	s->setAttribute(QWebEngineSettings::DnsPrefetchEnabled, true);
+	/* Pages may WRITE the clipboard ("copy" buttons work) but never read
+	   it: JavascriptCanPaste stays off and the permission handler denies
+	   ClipboardReadWrite, so a site cannot sniff what you copied. */
+	s->setAttribute(QWebEngineSettings::JavascriptCanAccessClipboard, true);
 
 	QWebEngineScript script;
 	script.setName(QStringLiteral("nib-bridge"));

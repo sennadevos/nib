@@ -45,6 +45,17 @@ cat > "$TMP/caret.html" <<'EOF'
 <title>caret</title><body style="margin:0">
 <p>alpha beta gamma delta</p>
 EOF
+cat > "$TMP/jsclip.html" <<'EOF'
+<title>jsclip</title><body><div id="t">copied-ok</div>
+<script>
+window.onload = function () {
+  var r = document.createRange();
+  r.selectNodeContents(document.getElementById('t'));
+  var s = getSelection(); s.removeAllRanges(); s.addRange(r);
+  document.execCommand('copy');
+};
+</script>
+EOF
 cat > "$TMP/caretj.html" <<'EOF'
 <title>caretj</title><body style="margin:0">
 <p>alpha one</p>
@@ -107,6 +118,11 @@ out=$(run caret "$TMP/caret.html")
 check "v-w-v-w-y yanks a word"      "$out" "caret yank='beta' OK"
 out=$(run caretj "$TMP/caretj.html")
 check "j crosses an input field"    "$out" 'caretj .* OK'
+
+echo "page clipboard"
+out=$(run jsclip "$TMP/jsclip.html")
+check "page copy button works"      "$out" "jsclip copy='copied-ok' OK"
+check "page clipboard read denied"  "$out" 'jsclip read=denied OK'
 
 echo "app mode"
 # exec: $SRV must be python itself, or cleanup kills only the subshell and
