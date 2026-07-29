@@ -45,6 +45,13 @@ cat > "$TMP/caret.html" <<'EOF'
 <title>caret</title><body style="margin:0">
 <p>alpha beta gamma delta</p>
 EOF
+cat > "$TMP/caretj.html" <<'EOF'
+<title>caretj</title><body style="margin:0">
+<p>alpha one</p>
+<input id="field">
+<p>charlie</p>
+<div style="height:3000px"></div>
+EOF
 printf '#!/bin/sh\necho "HANDOFF: $*" >> %s/handoff.log\n' "$TMP" > "$TMP/ext.sh"
 chmod +x "$TMP/ext.sh"
 
@@ -98,6 +105,8 @@ check "Escape blurs the field"      "$out" "esc blur active='' gate=keys->nib OK
 echo "caret mode"
 out=$(run caret "$TMP/caret.html")
 check "v-w-v-w-y yanks a word"      "$out" "caret yank='beta' OK"
+out=$(run caretj "$TMP/caretj.html")
+check "j crosses an input field"    "$out" 'caretj .* OK'
 
 echo "app mode"
 # exec: $SRV must be python itself, or cleanup kills only the subshell and

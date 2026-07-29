@@ -268,7 +268,7 @@ path proven above, but the individual handlers are unverified.
 ### Testing without hijacking your session
 
 ```sh
-make test          # 20 checks, offscreen, no window ever appears
+make test          # 21 checks, offscreen, no window ever appears
 ```
 
 `test.sh` sets `QT_QPA_PLATFORM=offscreen` and points `XDG_DATA_HOME` /

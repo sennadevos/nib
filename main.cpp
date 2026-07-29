@@ -602,15 +602,41 @@ static QString focusScript()
                 '$': ['forward', 'lineboundary'] };
     var m = map[k];
     if (!m) return;
+    /*
+     * Blink cannot place a VisiblePosition inside a form control, so a
+     * line/word motion into one wedges: the selection stops moving, and
+     * the caret re-extend can even come back empty. Every motion therefore
+     * checks it made progress and falls back to a character step — which
+     * does cross a control — and the viewport is recentred only when the
+     * caret really moved (a pinned rect must not feed the scroller).
+     */
+    var fn = sel.focusNode, fo = sel.focusOffset;
     if (caretMode === 2) {
       sel.modify('extend', m[0], m[1]);
+      if (m[1] !== 'character' &&
+          sel.focusNode === fn && sel.focusOffset === fo)
+        sel.modify('extend', m[0], 'character');
     } else {
       /* Keep the one-character caret: anchor at the start, move, re-extend. */
-      sel.collapseToStart();
-      sel.modify('move', m[0], m[1]);
-      sel.modify('extend', 'forward', 'character');
+      var an = sel.anchorNode, ao = sel.anchorOffset;
+      var op = function (gran) {
+        sel.collapseToStart();
+        sel.modify('move', m[0], gran);
+        sel.modify('extend', 'forward', 'character');
+      };
+      op(m[1]);
+      if (sel.isCollapsed ||
+          (m[1] !== 'character' &&
+           sel.anchorNode === an && sel.anchorOffset === ao &&
+           sel.focusNode === fn && sel.focusOffset === fo))
+        op('character');
+      if (sel.isCollapsed) {   /* document edge: keep a visible caret */
+        sel.modify('move', 'backward', 'character');
+        sel.modify('extend', 'forward', 'character');
+      }
     }
-    caretShow();
+    if (sel.focusNode !== fn || sel.focusOffset !== fo)
+      caretShow();
   };
 
   /* Escape from the C++ side: leave whichever mode is active. */
@@ -686,6 +712,7 @@ private:
 	void            appTest(QWebEngineView *view);
 	void            hintTest(QWebEngineView *view);
 	void            caretTest(QWebEngineView *view);
+	void            caretObstacleTest(QWebEngineView *view);
 	void            sendKey(int key, Qt::KeyboardModifiers mods,
 	                    const QString &text = QString());
 	bool            m_tested = false;   /* debug tests run once per window */
@@ -1006,7 +1033,8 @@ void Browser::selfTest(QWebEngineView *view)
 		return;
 	const QByteArray mode = qgetenv("NIB_DEBUG");
 	if (mode == "keys" || mode == "bounds" || mode == "ctrl" ||
-	    mode == "app" || mode == "hint" || mode == "caret") {
+	    mode == "app" || mode == "hint" || mode == "caret" ||
+	    mode == "caretj") {
 		m_tested = true;
 		if (mode == "keys")
 			keyTest(view);
@@ -1018,6 +1046,8 @@ void Browser::selfTest(QWebEngineView *view)
 			hintTest(view);
 		else if (mode == "caret")
 			caretTest(view);
+		else if (mode == "caretj")
+			caretObstacleTest(view);
 		else
 			appTest(view);
 	}
@@ -1338,6 +1368,51 @@ void Browser::caretTest(QWebEngineView *view)
 		fprintf(stderr, "nib: caret yank='%s' %s\n", qUtf8Printable(got),
 		    got == QStringLiteral("beta") ? "OK" : "FAIL");
 		fflush(stderr);
+	});
+}
+
+/*
+ * Regression: j (a line motion) used to wedge against a form control —
+ * Blink cannot place a caret inside one — leaving an empty, invisible
+ * selection whose pinned rect could feed the auto-recentre scroller.
+ * Twelve j across "alpha one" / <input> / "charlie" must end with a
+ * non-empty selection inside "charlie" and no scrolling beyond the 64px
+ * the load-time selftest already did.
+ */
+void Browser::caretObstacleTest(QWebEngineView *view)
+{
+	auto *page = qobject_cast<Page *>(view->page());
+	if (!page)
+		return;
+	int at = 600;
+	QTimer::singleShot(at, this, [this] {
+		sendKey(Qt::Key_V, Qt::NoModifier, QStringLiteral("v"));
+	});
+	for (int i = 0; i < 12; i++) {
+		at += 150;
+		QTimer::singleShot(at, this, [this] {
+			sendKey(Qt::Key_J, Qt::NoModifier, QStringLiteral("j"));
+		});
+	}
+	QTimer::singleShot(at + 500, this, [page] {
+		/* The caret must have crossed the control (anchor in "charlie"),
+		   must not be empty, and must not have run the page downward —
+		   only the legitimate recentre toward the top (<= the 64px the
+		   selftest scrolled) is allowed. */
+		page->runJavaScript(QStringLiteral(
+		    "(function(){var s=getSelection();var t=window.__nibTarget();"
+		    "var inCharlie=!!(s.anchorNode&&s.anchorNode.textContent"
+		    ".indexOf('charlie')>=0);"
+		    "var ok=s.toString().length>0&&inCharlie&&t&&t.scrollTop<=64;"
+		    "return 'sel=\"'+s.toString().replace(/\\s+/g,' ')+"
+		    "'\" charlie='+inCharlie+' scroll='+(t?t.scrollTop:-1)+"
+		    "' ok='+ok})()"),
+		    QWebEngineScript::ApplicationWorld, [](const QVariant &v) {
+			const QString s = v.toString();
+			fprintf(stderr, "nib: caretj %s %s\n", qUtf8Printable(s),
+			    s.contains(QStringLiteral("ok=true")) ? "OK" : "FAIL");
+			fflush(stderr);
+		});
 	});
 }
 
