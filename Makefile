@@ -24,9 +24,14 @@ main.moc: main.cpp
 bundle: nib
 	./bundle.sh $(LIBDIR)
 
+# The desktop entry gets the absolute binary path: launchers (fuzzel, GNOME,
+# compositor keybinds via gtk-launch) run with the session PATH, which often
+# lacks ~/.local/bin — a bare Exec=nib silently fails there.
 install: nib
 	install -Dm755 nib $(DESTDIR)$(PREFIX)/bin/nib
-	install -Dm644 nib.desktop $(DESTDIR)$(PREFIX)/share/applications/nib.desktop
+	sed 's|^Exec=nib|Exec=$(PREFIX)/bin/nib|' nib.desktop > nib.desktop.tmp
+	install -Dm644 nib.desktop.tmp $(DESTDIR)$(PREFIX)/share/applications/nib.desktop
+	rm -f nib.desktop.tmp
 
 uninstall:
 	rm -f $(DESTDIR)$(PREFIX)/bin/nib

@@ -2,7 +2,7 @@
 Type=Application
 Name=nib
 GenericName=Web Browser
-Comment=Minimal keyboard-driven WebKit browser
+Comment=Minimal keyboard-driven browser on a Chromium backend
 Exec=nib %U
 Icon=web-browser
 Terminal=false
