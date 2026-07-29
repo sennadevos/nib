@@ -1,0 +1,7 @@
+# build output
+nib
+main.moc
+*.o
+
+# bundled Qt/Chromium runtime (made by `make bundle`, ~323 MB)
+lib/
