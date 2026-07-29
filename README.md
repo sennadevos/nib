@@ -92,7 +92,8 @@ hints. The status line says which mode you are in throughout.
 
 Getting text *into* a page is the same grammar: `gi` to focus the field, then
 paste with `C-v` — the field owns the keys from that point, exactly like the
-focus gate above.
+focus gate above. Escape blurs the field when you are done: insert mode out,
+normal mode back.
 
 ### Caret mode: yanking text off a page
 
@@ -114,7 +115,7 @@ copying. The caret starts from the current selection when there is one — a
 | `C-y` | yank URL to clipboard | `M-Left` / `M-Right` | back / forward |
 | `C-p` | open URL from clipboard | `C-r` / `C-S-r` | reload / bypass cache |
 | `C-+` / `C--` / `C-0` | zoom | `C-S-p` | print to PDF |
-| `Escape` | stop loading, or dismiss the bar | `C-q` | quit |
+| `Escape` | blur a field / stop loading / dismiss the bar | `C-q` | quit |
 
 `C-g` took over the URL bar from `C-l`, which now means "forward". Find-next
 moved off `C-g` accordingly: use `n` / `N`, or Enter in the find bar.
@@ -267,7 +268,7 @@ path proven above, but the individual handlers are unverified.
 ### Testing without hijacking your session
 
 ```sh
-make test          # 19 checks, offscreen, no window ever appears
+make test          # 20 checks, offscreen, no window ever appears
 ```
 
 `test.sh` sets `QT_QPA_PLATFORM=offscreen` and points `XDG_DATA_HOME` /

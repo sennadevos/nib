@@ -93,6 +93,7 @@ out=$(run hint "$TMP/hints.html")
 check "f raises a hint per target"  "$out" 'hint count=3'
 check "typing the hint follows it"  "$out" 'hint follow hash=#target OK'
 check "gi focuses the text field"   "$out" 'hint gi active=field OK'
+check "Escape blurs the field"      "$out" "esc blur active='' gate=keys->nib OK"
 
 echo "caret mode"
 out=$(run caret "$TMP/caret.html")

@@ -1246,7 +1246,7 @@ void Browser::hintTest(QWebEngineView *view)
 				sendKey(Qt::Key_I, Qt::NoModifier, QStringLiteral("i"));
 				QTimer::singleShot(300, this, [this, page] {
 					sendKey(Qt::Key_A, Qt::NoModifier, QStringLiteral("a"));
-					QTimer::singleShot(300, this, [page] {
+					QTimer::singleShot(300, this, [this, page] {
 						page->runJavaScript(QStringLiteral(
 						    "document.activeElement?document.activeElement.id:''"),
 						    QWebEngineScript::ApplicationWorld,
@@ -1256,6 +1256,28 @@ void Browser::hintTest(QWebEngineView *view)
 							    qUtf8Printable(id),
 							    id == QStringLiteral("field") ? "OK" : "FAIL");
 							fflush(stderr);
+						});
+						/* and Escape must blur it again ("leave insert") */
+						QTimer::singleShot(200, this, [this, page] {
+							sendKey(Qt::Key_Escape, Qt::NoModifier);
+							QTimer::singleShot(300, this, [page] {
+								page->runJavaScript(QStringLiteral(
+								    "document.activeElement?"
+								    "document.activeElement.id:''"),
+								    QWebEngineScript::ApplicationWorld,
+								    [page](const QVariant &v) {
+									const QString id = v.toString();
+									const bool gate = page->focus()->ready &&
+									    !page->focus()->editable;
+									fprintf(stderr,
+									    "nib: esc blur active='%s' gate=%s %s\n",
+									    qUtf8Printable(id),
+									    gate ? "keys->nib" : "keys->page",
+									    id != QStringLiteral("field") && gate
+									        ? "OK" : "FAIL");
+									fflush(stderr);
+								});
+							});
 						});
 					});
 				});
@@ -1732,6 +1754,16 @@ bool Browser::eventFilter(QObject *obj, QEvent *ev)
 			setStatus(QString());
 			return true;
 		}
+		/* Leave "insert mode": a focused text field keeps every key from
+		   us, so Escape blurs it and hands the keyboard back to vim. */
+		if (Page *p = currentPage()) {
+			if (p->focus()->ready && p->focus()->editable) {
+				runJs(QStringLiteral(
+				    "document.activeElement && document.activeElement.blur()"));
+				setStatus(QString());
+				return true;
+			}
+		}
 		if (QWebEngineView *v = currentView())
 			v->triggerPageAction(QWebEnginePage::Stop);
 		setStatus(QString());
@@ -1911,7 +1943,7 @@ static const char *usage =
 "  C-t  new tab      C-w  close tab   C-Tab      next tab       M-1..9  nth tab\n"
 "  C-r  reload       C-S-r  no cache  C-S-p      print to PDF\n"
 "  C-+ / C-- / C-0   zoom             C-q        quit\n"
-"  Escape            stop loading, or dismiss the bar\n"
+"  Escape            blur a focused field, stop loading, or dismiss the bar\n"
 "\n"
 "n / N still step through matches; the command bar keeps its own Ctrl keys\n"
 "for line editing while it has focus.\n"
