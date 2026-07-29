@@ -16,6 +16,9 @@ export QT_QPA_PLATFORM=offscreen
 # (CompositorFrameSinkSupport::UpdateNeedsBeginFramesInternal) under the
 # offscreen platform. Software rasterization avoids that path.
 export QTWEBENGINE_CHROMIUM_FLAGS="--disable-gpu ${QTWEBENGINE_CHROMIUM_FLAGS:-}"
+# Isolated profile: don't churn the user's real one, and don't collide with
+# a nib (or another suite run) already holding the profile lock.
+export XDG_DATA_HOME="$TMP/data" XDG_CACHE_HOME="$TMP/cache"
 fails=0
 
 cleanup() { [ -n "${SRV:-}" ] && kill "$SRV" 2>/dev/null; rm -rf "$TMP"; }
@@ -32,6 +35,15 @@ EOF
 cat > "$TMP/shell.html" <<'EOF'
 <title>shell</title><body style="margin:0;overflow:hidden">
 <div style="height:100vh;overflow-y:auto"><div style="height:5000px">inner</div></div>
+EOF
+cat > "$TMP/hints.html" <<'EOF'
+<title>hints</title><body style="margin:0">
+<a href="#target">one</a> <a href="#other">two</a> <input id="field">
+<div style="height:3000px"></div><div id="target">bottom</div>
+EOF
+cat > "$TMP/caret.html" <<'EOF'
+<title>caret</title><body style="margin:0">
+<p>alpha beta gamma delta</p>
 EOF
 printf '#!/bin/sh\necho "HANDOFF: $*" >> %s/handoff.log\n' "$TMP" > "$TMP/ext.sh"
 chmod +x "$TMP/ext.sh"
@@ -76,8 +88,20 @@ echo "ctrl bindings"
 out=$(run ctrl "$TMP/plain.html")
 check "C-j moves one page"          "$out" 'C-j page-down .* OK'
 
+echo "hint mode"
+out=$(run hint "$TMP/hints.html")
+check "f raises a hint per target"  "$out" 'hint count=3'
+check "typing the hint follows it"  "$out" 'hint follow hash=#target OK'
+check "gi focuses the text field"   "$out" 'hint gi active=field OK'
+
+echo "caret mode"
+out=$(run caret "$TMP/caret.html")
+check "v-w-v-w-y yanks a word"      "$out" "caret yank='beta' OK"
+
 echo "app mode"
-(cd "$TMP" && python3 -m http.server "$PORT" >/dev/null 2>&1) &
+# exec: $SRV must be python itself, or cleanup kills only the subshell and
+# leaks a server that poisons every later run on this port
+(cd "$TMP" && exec python3 -m http.server "$PORT" >/dev/null 2>&1) &
 SRV=$!
 sleep 2
 out=$(run app --app "http://localhost:$PORT/plain.html" --scope localhost)

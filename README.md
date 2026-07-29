@@ -4,7 +4,7 @@ A surf-like minimal browser on a **Chromium** backend.
 
 No toolbar, no menus, no buttons — one hidden command bar and vim-style
 navigation. The engine is Chromium via QtWebEngine: Blink, V8, Chromium's GPU
-compositor and its scroll animator. About 700 lines of C++.
+compositor and its scroll animator. About 2000 lines of C++.
 
 ## Why QtWebEngine
 
@@ -73,11 +73,35 @@ the safe direction is always "let the page have it".
 | --- | --- | --- | --- |
 | `h` `j` `k` `l` | scroll left/down/up/right | `d` / `u` | half page down / up |
 | `gg` / `G` | top / bottom | `H` / `L` | back / forward |
+| `f` / `F` | hint links: follow / new tab | `gi` | hint text fields, focus one |
+| `yy` / `yf` | yank page URL / a link's URL | `v` | caret mode (below) |
 | `/` | find | `n` / `N` | next / previous match |
-| `o` | open URL bar | | |
+| `o` | open URL bar | `5j` `3d` … | counts work on scroll keys |
 
 Scrolling prefers the document, and falls back to the largest scrollable box on
 screen, so app-shell layouts still respond to `j`/`k`.
+
+### Hints: acting on page elements
+
+`f` overlays home-row labels (`a s d f …`) on every link, button and field in
+view; type a label to click it. `F` opens the link in a new tab instead (in app
+mode it loads in place, scope rules included), `yf` copies the link's URL, and
+`gi` labels only text fields and focuses the one you pick. Backspace edits a
+half-typed label, Escape cancels, and a key that matches nothing dismisses the
+hints. The status line says which mode you are in throughout.
+
+Getting text *into* a page is the same grammar: `gi` to focus the field, then
+paste with `C-v` — the field owns the keys from that point, exactly like the
+focus gate above.
+
+### Caret mode: yanking text off a page
+
+`v` drops a text cursor on the page — the visible one-character selection is
+the caret, vim-style. `h j k l` move by character and line, `w` / `b` / `e` by
+word, `0` / `$` to the line edges. `v` again starts extending (visual mode),
+`y` copies the selection to the clipboard and leaves, Escape leaves without
+copying. The caret starts from the current selection when there is one — a
+`/`-find match, say — otherwise from the text nearest mid-viewport.
 
 ### Always available
 
@@ -171,7 +195,7 @@ cases; use `--scope` when it is not.
 | `NIB_HOME` | `https://duckduckgo.com` | start page |
 | `NIB_SEARCH` | DuckDuckGo | search URL with a `%s` slot |
 | `NIB_UA` | Chromium default | user agent override |
-| `NIB_DEBUG` | unset | `1` traces focus reports and self-tests scrolling; `keys` also drives synthetic keys through the real filter path |
+| `NIB_DEBUG` | unset | `1` traces focus reports and self-tests scrolling; `keys`/`hint`/`caret` etc. drive synthetic keys through the real filter path (see test.sh) |
 
 Profile in `~/.local/share/nib`, cache in `~/.cache/nib`.
 
@@ -182,7 +206,9 @@ Persistent cookies, disk cache, popups from script blocked (user-initiated
 outright, autoplay requires a gesture, bad TLS certificates rejected with a
 status message. Downloads go to `~/Downloads` without prompting.
 
-No bookmarks, no history UI, no session restore, no adblock, no link hints.
+No bookmarks, no history UI, no session restore, no adblock. Hints and the
+caret run in the top frame only — elements inside iframes are part of the
+page, not nib's.
 
 ## PoC status
 
@@ -211,6 +237,18 @@ The half-pixel gap is fractional display scaling, not drift — the value is
 identical at both samples. `NIB_DEBUG=ctrl` confirms `C-j` moves exactly one
 page (799.2 px of an expected 799.0).
 
+Hint and caret mode are verified through the same synthetic-key path:
+
+| sequence | result |
+| --- | --- |
+| `f` on a page with 2 links + 1 field | 3 labelled hints raised |
+| `f` `a` | first link followed (`location.hash` = `#target`) |
+| `gi` `a` | the `<input>` focused, keys handed to the page |
+| `v` `w` `v` `w` `y` on "alpha beta …" | clipboard holds `beta` |
+
+The caret/clipboard check is automatable precisely because the offscreen
+platform has a private clipboard — the Wayland caveat below does not apply.
+
 `C-y` and `C-p` were verified once by hand with the window focused, then dropped
 from the automated suite: on Wayland the result depends on window focus, and
 taking clipboard ownership and then exiting **destroys whatever was on the
@@ -229,14 +267,17 @@ path proven above, but the individual handlers are unverified.
 ### Testing without hijacking your session
 
 ```sh
-make test          # 16 checks, offscreen, no window ever appears
+make test          # 19 checks, offscreen, no window ever appears
 ```
 
-`test.sh` sets `QT_QPA_PLATFORM=offscreen`. The engine runs for real — Blink
-loads pages, JS executes, synthetic keys traverse the actual event filter — but
-nothing is mapped, so it is safe on a session someone is working in. Covered:
-the scroll steps, the inner-scroller heuristic, the focus gate, both scroll
-limits, `C-j`, app-mode single-tab and off-scope handoff, and the scope rules.
+`test.sh` sets `QT_QPA_PLATFORM=offscreen` and points `XDG_DATA_HOME` /
+`XDG_CACHE_HOME` at a tempdir, so the suite neither churns your real profile
+nor collides with a running nib holding the profile lock. The engine runs for
+real — Blink loads pages, JS executes, synthetic keys traverse the actual
+event filter — but nothing is mapped, so it is safe on a session someone is
+working in. Covered: the scroll steps, the inner-scroller heuristic, the focus
+gate, both scroll limits, `C-j`, hint follow / `gi`, a caret-mode yank,
+app-mode single-tab and off-scope handoff, and the scope rules.
 
 Do **not** run the GUI against a desktop you are using. Windows steal focus,
 and on Wayland only the focused client may read the clipboard — so `C-y`/`C-p`

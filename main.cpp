@@ -187,6 +187,11 @@ public:
 	bool editable = false;
 	bool ready = false;   /* false until the page reports in */
 
+signals:
+	void openUrlRequested(const QString &url, bool newTab);
+	void yankedText(const QString &text, const QString &what);
+	void modeReported(const QString &mode);
+
 public slots:
 	void setEditable(bool e)
 	{
@@ -196,6 +201,20 @@ public slots:
 			fprintf(stderr, "nib: focus report editable=%d\n", int(e));
 			fflush(stderr);
 		}
+	}
+
+	/* Hint and caret mode call back through these. */
+	void openUrl(const QString &url, bool newTab)
+	{
+		emit openUrlRequested(url, newTab);
+	}
+	void yanked(const QString &text, const QString &what)
+	{
+		emit yankedText(text, what);
+	}
+	void vimMode(const QString &mode)
+	{
+		emit modeReported(mode);
 	}
 };
 
@@ -336,6 +355,267 @@ static QString focusScript()
     var t = window.__nibTarget();
     if (t) apply(0, 0, bottom ? t.scrollHeight : 0, true);
   };
+
+  /* ---------------------------------------------------------- hint mode */
+
+  /* Home-row labels; fixed length per batch so no label is a prefix of
+     another and every match is unambiguous. */
+  var HINT_KEYS = 'asdfghjkl';
+  var hintState = null;   /* { action, buf, items: [{el,label,span}], box } */
+
+  function isEditable(el) {
+    if (!el) return false;
+    if (el.isContentEditable) return true;
+    var tag = el.tagName;
+    if (tag === 'TEXTAREA' || tag === 'SELECT') return true;
+    if (tag !== 'INPUT') return false;
+    return !/^(button|submit|reset|checkbox|radio|file|image|color|range)$/i
+        .test(el.type || '');
+  }
+
+  var CLICKABLE = 'a[href], button, input, textarea, select, summary, ' +
+      'audio[controls], video[controls], [onclick], [role="link"], ' +
+      '[role="button"], [role="tab"], [role="menuitem"], ' +
+      '[contenteditable=""], [contenteditable="true"], [tabindex]';
+
+  function hintTargets(action) {
+    var all = document.querySelectorAll(
+        action === 'input' ? 'input, textarea, select, [contenteditable=""],' +
+                             ' [contenteditable="true"]'
+                           : CLICKABLE);
+    var out = [];
+    for (var i = 0; i < all.length; i++) {
+      var el = all[i];
+      if (action === 'input' && !isEditable(el)) continue;
+      var r = el.getBoundingClientRect();
+      if (r.width < 2 || r.height < 2) continue;
+      if (r.bottom < 0 || r.top > innerHeight ||
+          r.right < 0 || r.left > innerWidth) continue;
+      var s = getComputedStyle(el);
+      if (s.visibility !== 'visible' || s.display === 'none') continue;
+      out.push({ el: el, r: r });
+    }
+    return out;
+  }
+
+  function hintLabels(n) {
+    var len = 1, cap = HINT_KEYS.length;
+    while (cap < n) { len++; cap *= HINT_KEYS.length; }
+    var out = [];
+    for (var i = 0; i < n; i++) {
+      var s = '', v = i;
+      for (var d = 0; d < len; d++) {
+        s = HINT_KEYS[v % HINT_KEYS.length] + s;
+        v = Math.floor(v / HINT_KEYS.length);
+      }
+      out.push(s);
+    }
+    return out;
+  }
+
+  window.__nibHintStop = function (silent) {
+    if (!hintState) return;
+    hintState.box.remove();
+    hintState = null;
+    if (!silent && bridge) bridge.vimMode('normal');
+  };
+
+  window.__nibHintStart = function (action) {
+    window.__nibHintStop(true);
+    var t = hintTargets(action);
+    if (!t.length) {
+      if (bridge) bridge.vimMode('normal');
+      return 0;
+    }
+    var labels = hintLabels(t.length);
+    var box = document.createElement('div');
+    box.id = '__nib-hints';
+    box.style.cssText =
+        'all:initial;position:fixed;left:0;top:0;z-index:2147483647;' +
+        'pointer-events:none;';
+    for (var i = 0; i < t.length; i++) {
+      var sp = document.createElement('span');
+      sp.textContent = labels[i];
+      sp.style.cssText = 'all:initial;position:fixed;' +
+          'left:' + Math.max(0, t[i].r.left - 2) + 'px;' +
+          'top:'  + Math.max(0, t[i].r.top  - 2) + 'px;' +
+          'background:#ffd76e;color:#302505;' +
+          'font:bold 11px/1.3 monospace;padding:1px 3px;' +
+          'border:1px solid #ad8b00;border-radius:3px;' +
+          'box-shadow:0 1px 2px rgba(0,0,0,.4);';
+      box.appendChild(sp);
+      t[i].span = sp;
+      t[i].label = labels[i];
+    }
+    (document.body || document.documentElement).appendChild(box);
+    hintState = { action: action, buf: '', items: t, box: box };
+    if (bridge) bridge.vimMode('hint');
+    return t.length;
+  };
+
+  function hintAct(el, action) {
+    if (action === 'yank') {
+      var txt = el.href || el.value ||
+          (el.textContent || '').trim().replace(/\s+/g, ' ');
+      if (bridge) bridge.yanked(txt || '', el.href ? 'link' : 'text');
+    } else if (action === 'tab' && el.href) {
+      if (bridge) bridge.openUrl(el.href, true);
+    } else if (action === 'input' || isEditable(el)) {
+      el.focus();
+    } else {
+      el.focus();
+      el.click();
+    }
+    if (bridge) bridge.vimMode('normal');
+  }
+
+  window.__nibHintKey = function (k) {
+    if (!hintState) return;
+    hintState.buf = k === 'BS' ? hintState.buf.slice(0, -1)
+                               : hintState.buf + k;
+    var buf = hintState.buf, live = [];
+    for (var i = 0; i < hintState.items.length; i++) {
+      var it = hintState.items[i];
+      var on = it.label.indexOf(buf) === 0;
+      it.span.style.display = on ? '' : 'none';
+      if (on) live.push(it);
+    }
+    if (!live.length) {
+      window.__nibHintStop();
+      return;
+    }
+    if (live.length === 1 && live[0].label === buf) {
+      var el = live[0].el, action = hintState.action;
+      window.__nibHintStop(true);
+      hintAct(el, action);
+    }
+  };
+
+  /* A tab switch or window change should not leave hints behind. */
+  window.addEventListener('blur', function () { window.__nibHintStop(); });
+
+  /* --------------------------------------------------------- caret mode */
+
+  /*
+   * The caret is a one-character selection (an invisible collapsed caret
+   * would be useless), moved with Selection.modify. Visual mode extends the
+   * same selection instead of moving it.
+   */
+  var caretMode = 0;   /* 0 off, 1 caret, 2 visual */
+
+  function caretShow() {
+    var sel = getSelection();
+    if (!sel.rangeCount) return;
+    var r = sel.getRangeAt(0).getBoundingClientRect();
+    if (r.top < 40 || r.bottom > innerHeight - 40)
+      window.__nibScroll(0, r.top - innerHeight / 2, false);
+  }
+
+  window.__nibCaretStop = function () {
+    if (!caretMode) return;
+    caretMode = 0;
+    getSelection().removeAllRanges();
+    if (bridge) bridge.vimMode('normal');
+  };
+
+  window.__nibCaretStart = function () {
+    var sel = getSelection();
+    if (!sel.rangeCount || sel.isCollapsed) {
+      /* Start from a find-match or prior selection when there is one;
+         otherwise probe mid-viewport for text, else take the first visible
+         text node. */
+      var range = null;
+      for (var y = 0.25; y <= 0.75 && !range; y += 0.125) {
+        var py = innerHeight * y;
+        var c = document.caretRangeFromPoint(innerWidth / 2, py);
+        if (!c || c.startContainer.nodeType !== 3 ||
+            !c.startContainer.textContent.trim())
+          continue;
+        /* caretRangeFromPoint snaps to the nearest position; only take a
+           hit whose element really spans the probed point */
+        var pe = c.startContainer.parentElement;
+        var pr = pe && pe.getBoundingClientRect();
+        if (pr && py >= pr.top && py <= pr.bottom)
+          range = c;
+      }
+      if (!range && document.body) {
+        var w = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+        var n;
+        while ((n = w.nextNode())) {
+          if (!n.textContent.trim()) continue;
+          var p = n.parentElement;
+          var pr = p && p.getBoundingClientRect();
+          if (!pr || pr.bottom <= 0 || pr.top >= innerHeight) continue;
+          var ps = p && getComputedStyle(p);
+          if (ps && (ps.visibility !== 'visible' || ps.display === 'none'))
+            continue;
+          range = document.createRange();
+          range.setStart(n, 0);
+          break;
+        }
+      }
+      if (!range) {
+        if (bridge) bridge.vimMode('normal');
+        return;
+      }
+      range.collapse(true);
+      sel.removeAllRanges();
+      sel.addRange(range);
+    }
+    if (sel.isCollapsed)
+      sel.modify('extend', 'forward', 'character');
+    if (sel.isCollapsed) {   /* at the very end: show the last character */
+      sel.modify('move', 'backward', 'character');
+      sel.modify('extend', 'forward', 'character');
+    }
+    caretMode = 1;
+    caretShow();
+    if (bridge) bridge.vimMode('caret');
+  };
+
+  window.__nibCaretKey = function (k) {
+    if (!caretMode) return;
+    var sel = getSelection();
+    if (k === 'v') {
+      caretMode = caretMode === 2 ? 1 : 2;
+      if (caretMode === 1 && !sel.isCollapsed) {
+        sel.collapse(sel.focusNode, sel.focusOffset);
+        sel.modify('extend', 'forward', 'character');
+      }
+      if (bridge) bridge.vimMode(caretMode === 2 ? 'visual' : 'caret');
+      return;
+    }
+    if (k === 'y') {
+      var text = sel.toString();
+      window.__nibCaretStop();
+      if (bridge) bridge.yanked(text, 'selection');
+      return;
+    }
+    var map = { h: ['backward', 'character'], l: ['forward', 'character'],
+                j: ['forward', 'line'],       k: ['backward', 'line'],
+                w: ['forward', 'word'],       b: ['backward', 'word'],
+                e: ['forward', 'word'],
+                '0': ['backward', 'lineboundary'],
+                '$': ['forward', 'lineboundary'] };
+    var m = map[k];
+    if (!m) return;
+    if (caretMode === 2) {
+      sel.modify('extend', m[0], m[1]);
+    } else {
+      /* Keep the one-character caret: anchor at the start, move, re-extend. */
+      sel.collapseToStart();
+      sel.modify('move', m[0], m[1]);
+      sel.modify('extend', 'forward', 'character');
+    }
+    caretShow();
+  };
+
+  /* Escape from the C++ side: leave whichever mode is active. */
+  window.__nibModeExit = function () {
+    window.__nibHintStop(true);
+    window.__nibCaretStop();
+    if (bridge) bridge.vimMode('normal');
+  };
 })();
 )JS";
 }
@@ -388,7 +668,11 @@ private:
 	void            runJs(const QString &js);
 	bool            vimReady() const;
 	bool            handleVim(QKeyEvent *ke);
+	bool            handleHintKey(QKeyEvent *ke);
+	bool            handleCaretKey(QKeyEvent *ke);
 	bool            handleCtrl(QKeyEvent *ke);
+	void            startHint(const QString &action);
+	void            resetVimState();
 	void            zoomBy(double delta, bool reset);
 	void            findText(const QString &text, bool backward);
 	void            wire(QWebEngineView *view);
@@ -397,7 +681,10 @@ private:
 	void            boundsTest(QWebEngineView *view);
 	void            ctrlTest(QWebEngineView *view);
 	void            appTest(QWebEngineView *view);
-	void            sendKey(int key, Qt::KeyboardModifiers mods);
+	void            hintTest(QWebEngineView *view);
+	void            caretTest(QWebEngineView *view);
+	void            sendKey(int key, Qt::KeyboardModifiers mods,
+	                    const QString &text = QString());
 	bool            m_tested = false;   /* debug tests run once per window */
 	bool            m_iconSaved = false;
 
@@ -407,7 +694,15 @@ private:
 	QLineEdit         *m_bar;
 	QLabel            *m_status;
 	BarMode            m_mode = BarHidden;
+
+	/* vim state: Hint routes keys to the hint overlay, Caret to the page
+	   caret. Both are set optimistically on the trigger key and confirmed
+	   (or reverted) by the page's mode report. */
+	enum VimMode { VimNormal, VimHint, VimCaret };
+	VimMode            m_vimMode = VimNormal;
 	bool               m_pendingG = false;
+	bool               m_pendingY = false;
+	int                m_count = 0;
 	QString            m_lastFind;
 };
 
@@ -532,6 +827,7 @@ Browser::Browser(QWebEngineProfile *profile) : m_profile(profile)
 
 	connect(m_bar, &QLineEdit::returnPressed, this, &Browser::barActivated);
 	connect(m_tabs, &QTabWidget::currentChanged, this, [this](int) {
+		resetVimState();
 		refreshChrome();
 		setStatus(QString());
 	});
@@ -566,6 +862,20 @@ bool Browser::vimReady() const
 {
 	Page *p = currentPage();
 	return p && p->focus()->ready && !p->focus()->editable;
+}
+
+void Browser::resetVimState()
+{
+	m_vimMode = VimNormal;
+	m_pendingG = false;
+	m_pendingY = false;
+	m_count = 0;
+}
+
+void Browser::startHint(const QString &action)
+{
+	m_vimMode = VimHint;
+	runJs(QStringLiteral("__nibHintStart('%1')").arg(action));
 }
 
 void Browser::syncTabs()
@@ -623,6 +933,13 @@ void Browser::wire(QWebEngineView *view)
 		});
 	}
 
+	/* A navigation tears down the page-side mode machinery; keys must not
+	   keep routing to a hint overlay that no longer exists. */
+	connect(view->page(), &QWebEnginePage::loadStarted, this, [this, view] {
+		if (view == currentView())
+			resetVimState();
+	});
+
 	connect(view, &QWebEngineView::loadProgress, this, [this, view](int p) {
 		if (view != currentView())
 			return;
@@ -677,7 +994,8 @@ void Browser::selfTest(QWebEngineView *view)
 	if (m_tested)
 		return;
 	const QByteArray mode = qgetenv("NIB_DEBUG");
-	if (mode == "keys" || mode == "bounds" || mode == "ctrl" || mode == "app") {
+	if (mode == "keys" || mode == "bounds" || mode == "ctrl" ||
+	    mode == "app" || mode == "hint" || mode == "caret") {
 		m_tested = true;
 		if (mode == "keys")
 			keyTest(view);
@@ -685,15 +1003,19 @@ void Browser::selfTest(QWebEngineView *view)
 			boundsTest(view);
 		else if (mode == "ctrl")
 			ctrlTest(view);
+		else if (mode == "hint")
+			hintTest(view);
+		else if (mode == "caret")
+			caretTest(view);
 		else
 			appTest(view);
 	}
 }
 
-void Browser::sendKey(int key, Qt::KeyboardModifiers mods)
+void Browser::sendKey(int key, Qt::KeyboardModifiers mods, const QString &text)
 {
 	QWidget *target = QApplication::focusWidget();
-	QKeyEvent press(QEvent::KeyPress, key, mods);
+	QKeyEvent press(QEvent::KeyPress, key, mods, text);
 	QApplication::sendEvent(target ? target : this, &press);
 }
 
@@ -877,6 +1199,115 @@ void Browser::appTest(QWebEngineView *view)
 	});
 }
 
+/*
+ * Hint mode through the real key path: f must raise labelled hints, typing
+ * the first label must follow that link, and gi must focus the text field.
+ * Expects a page with links whose first target is href="#target" and an
+ * <input id="field"> (test.sh provides hints.html).
+ */
+void Browser::hintTest(QWebEngineView *view)
+{
+	auto *page = qobject_cast<Page *>(view->page());
+	if (!page)
+		return;
+
+	QTimer::singleShot(600, this, [this, page] {
+		/* selfTest just scrolled 64px; hints exist only for on-screen
+		   targets, so measure from the top. */
+		page->runJavaScript(QStringLiteral("window.__nibTarget()"
+		    ".scrollTo({top:0,behavior:'instant'}); 0"),
+		    QWebEngineScript::ApplicationWorld);
+		sendKey(Qt::Key_F, Qt::NoModifier, QStringLiteral("f"));
+		QTimer::singleShot(400, this, [this, page] {
+			page->runJavaScript(QStringLiteral(
+			    "(function(){var b=document.getElementById('__nib-hints');"
+			    "return b?b.children.length:-1})()"),
+			    QWebEngineScript::ApplicationWorld, [](const QVariant &v) {
+				fprintf(stderr, "nib: hint count=%d\n", v.toInt());
+				fflush(stderr);
+			});
+			sendKey(Qt::Key_A, Qt::NoModifier, QStringLiteral("a"));
+			QTimer::singleShot(400, this, [this, page] {
+				page->runJavaScript(QStringLiteral("location.hash"),
+				    QWebEngineScript::ApplicationWorld,
+				    [](const QVariant &v) {
+					const QString h = v.toString();
+					fprintf(stderr, "nib: hint follow hash=%s %s\n",
+					    qUtf8Printable(h),
+					    h == QStringLiteral("#target") ? "OK" : "FAIL");
+					fflush(stderr);
+				});
+				/* the anchor jump left us at the bottom; the input to
+				   hint is at the top */
+				page->runJavaScript(QStringLiteral("window.__nibTarget()"
+				    ".scrollTo({top:0,behavior:'instant'}); 0"),
+				    QWebEngineScript::ApplicationWorld);
+				sendKey(Qt::Key_G, Qt::NoModifier, QStringLiteral("g"));
+				sendKey(Qt::Key_I, Qt::NoModifier, QStringLiteral("i"));
+				QTimer::singleShot(300, this, [this, page] {
+					sendKey(Qt::Key_A, Qt::NoModifier, QStringLiteral("a"));
+					QTimer::singleShot(300, this, [page] {
+						page->runJavaScript(QStringLiteral(
+						    "document.activeElement?document.activeElement.id:''"),
+						    QWebEngineScript::ApplicationWorld,
+						    [](const QVariant &v) {
+							const QString id = v.toString();
+							fprintf(stderr, "nib: hint gi active=%s %s\n",
+							    qUtf8Printable(id),
+							    id == QStringLiteral("field") ? "OK" : "FAIL");
+							fflush(stderr);
+						});
+					});
+				});
+			});
+		});
+	});
+}
+
+/*
+ * Caret mode end to end: v places the caret on the first text, w moves a
+ * word, v extends, w selects the word, y lands it on the clipboard. The
+ * offscreen platform has a private clipboard, so this is safe to automate
+ * (unlike C-y/C-p on Wayland). Expects text "alpha beta gamma …".
+ */
+void Browser::caretTest(QWebEngineView *view)
+{
+	auto *page = qobject_cast<Page *>(view->page());
+	int at = 600;
+	const struct { int key; const char *txt; } seq[] = {
+	    { Qt::Key_V, "v" }, { Qt::Key_W, "w" }, { Qt::Key_V, "v" },
+	    { Qt::Key_W, "w" }, { Qt::Key_Y, "y" },
+	};
+	int step = 0;
+	for (const auto &s : seq) {
+		QTimer::singleShot(at, this, [this, s] {
+			sendKey(s.key, Qt::NoModifier, QString::fromLatin1(s.txt));
+		});
+		at += 250;
+		/* trace the selection after the first move and before the yank */
+		if (page && (step == 0 || step == 3)) {
+			QTimer::singleShot(at - 100, this, [page, step] {
+				page->runJavaScript(
+				    QStringLiteral("getSelection().toString()"),
+				    QWebEngineScript::ApplicationWorld,
+				    [step](const QVariant &v) {
+					fprintf(stderr, "nib: caret step%d sel='%s'\n", step,
+					    qUtf8Printable(v.toString()));
+					fflush(stderr);
+				});
+			});
+		}
+		step++;
+	}
+	QTimer::singleShot(at + 400, this, [] {
+		const QString got =
+		    QGuiApplication::clipboard()->text().trimmed();
+		fprintf(stderr, "nib: caret yank='%s' %s\n", qUtf8Printable(got),
+		    got == QStringLiteral("beta") ? "OK" : "FAIL");
+		fflush(stderr);
+	});
+}
+
 /* ------------------------------------------------------------------- tabs */
 
 QWebEngineView *Browser::adopt(Page *page, bool focusIt)
@@ -885,6 +1316,60 @@ QWebEngineView *Browser::adopt(Page *page, bool focusIt)
 	view->setPage(page);
 	const int index = m_tabs->addTab(view, QStringLiteral("blank"));
 	wire(view);
+
+	/* Hint and caret actions arrive from the page over the bridge. */
+	connect(page->focus(), &FocusBridge::openUrlRequested, this,
+	    [this, view](const QString &u, bool tab) {
+		if (view != currentView())
+			return;
+		const QUrl url(u);
+		if (!url.isValid())
+			return;
+		if (tab && !g_app.enabled)
+			newTab(url, true);
+		else
+			view->setUrl(url);   /* app mode: scope still enforced */
+	});
+	connect(page->focus(), &FocusBridge::yankedText, this,
+	    [this, view](const QString &t, const QString &what) {
+		if (view != currentView())
+			return;
+		if (t.isEmpty()) {
+			setStatus(QStringLiteral("nothing to yank"));
+			return;
+		}
+		QGuiApplication::clipboard()->setText(t);
+		QString shown = t.simplified();
+		if (shown.size() > 72)
+			shown = shown.left(72) + QStringLiteral("…");
+		setStatus(QStringLiteral("yanked %1: %2").arg(what, shown));
+	});
+	connect(page->focus(), &FocusBridge::modeReported, this,
+	    [this, view](const QString &m) {
+		if (view != currentView())
+			return;
+		if (m == QStringLiteral("hint")) {
+			m_vimMode = VimHint;
+			setStatus(QStringLiteral(
+			    "follow: type the hint — Backspace edits, Esc cancels"));
+		} else if (m == QStringLiteral("caret")) {
+			m_vimMode = VimCaret;
+			setStatus(QStringLiteral("-- CARET --  h j k l w b 0 $ move"
+			    " · v extend · y yank · Esc quit"));
+		} else if (m == QStringLiteral("visual")) {
+			m_vimMode = VimCaret;
+			setStatus(QStringLiteral("-- VISUAL --  h j k l w b 0 $ extend"
+			    " · v caret · y yank · Esc quit"));
+		} else {
+			m_vimMode = VimNormal;
+			/* Clear only our own mode prompts; keep e.g. "yanked …". */
+			const QString s = m_status->text();
+			if (s.startsWith(QStringLiteral("follow:")) ||
+			    s.startsWith(QStringLiteral("-- ")))
+				setStatus(QString());
+		}
+	});
+
 	syncTabs();
 	if (focusIt) {
 		m_tabs->setCurrentIndex(index);
@@ -1093,46 +1578,92 @@ bool Browser::handleVim(QKeyEvent *ke)
 	const int key = ke->key();
 	const bool shift = ke->modifiers() & Qt::ShiftModifier;
 
+	/* Count prefix: 5j scrolls five steps, 2d two half-pages. A bare 0 is
+	   unused in normal mode, so it only continues an existing count. */
+	if (!shift && ((key >= Qt::Key_1 && key <= Qt::Key_9) ||
+	               (key == Qt::Key_0 && m_count > 0))) {
+		m_pendingG = false;
+		m_pendingY = false;
+		m_count = qMin(999, m_count * 10 + (key - Qt::Key_0));
+		return true;
+	}
+	const int n = qMax(1, m_count);
+	m_count = 0;
+
 	if (m_pendingG) {
 		m_pendingG = false;
 		if (key == Qt::Key_G && !shift) {
 			runJs(QStringLiteral("__nibEnd(false)"));
 			return true;
 		}
+		if (key == Qt::Key_I && !shift) {
+			startHint(QStringLiteral("input"));
+			return true;
+		}
+	}
+
+	if (m_pendingY) {
+		m_pendingY = false;
+		if (key == Qt::Key_Y && !shift) {
+			if (v) {
+				const QString url = v->url().toString();
+				QGuiApplication::clipboard()->setText(url);
+				setStatus(QStringLiteral("yanked %1").arg(url));
+			}
+			return true;
+		}
+		if (key == Qt::Key_F && !shift) {
+			startHint(QStringLiteral("yank"));
+			return true;
+		}
+		return true;   /* unknown motion after y: swallow, like vim */
 	}
 
 	switch (key) {
 	case Qt::Key_J:
-		runJs(QStringLiteral("__nibScroll(0,%1,true)").arg(SCROLL_STEP));
+		runJs(QStringLiteral("__nibScroll(0,%1,true)").arg(n * SCROLL_STEP));
 		return true;
 	case Qt::Key_K:
-		runJs(QStringLiteral("__nibScroll(0,%1,true)").arg(-SCROLL_STEP));
+		runJs(QStringLiteral("__nibScroll(0,%1,true)").arg(n * -SCROLL_STEP));
 		return true;
 	case Qt::Key_H:
 		if (shift) {
 			if (v) v->back();
 		} else {
-			runJs(QStringLiteral("__nibScroll(%1,0,true)").arg(-SCROLL_STEP));
+			runJs(QStringLiteral("__nibScroll(%1,0,true)").arg(n * -SCROLL_STEP));
 		}
 		return true;
 	case Qt::Key_L:
 		if (shift) {
 			if (v) v->forward();
 		} else {
-			runJs(QStringLiteral("__nibScroll(%1,0,true)").arg(SCROLL_STEP));
+			runJs(QStringLiteral("__nibScroll(%1,0,true)").arg(n * SCROLL_STEP));
 		}
 		return true;
 	case Qt::Key_D:
-		runJs(QStringLiteral("__nibHalf(1)"));
+		runJs(QStringLiteral("__nibHalf(%1)").arg(n));
 		return true;
 	case Qt::Key_U:
-		runJs(QStringLiteral("__nibHalf(-1)"));
+		runJs(QStringLiteral("__nibHalf(%1)").arg(-n));
 		return true;
 	case Qt::Key_G:
 		if (shift)
 			runJs(QStringLiteral("__nibEnd(true)"));
 		else
 			m_pendingG = true;
+		return true;
+	case Qt::Key_F:
+		startHint(shift ? QStringLiteral("tab") : QStringLiteral("open"));
+		return true;
+	case Qt::Key_Y:
+		if (!shift)
+			m_pendingY = true;
+		return true;
+	case Qt::Key_V:
+		if (!shift) {
+			m_vimMode = VimCaret;
+			runJs(QStringLiteral("__nibCaretStart()"));
+		}
 		return true;
 	case Qt::Key_N:
 		if (!m_lastFind.isEmpty())
@@ -1149,6 +1680,29 @@ bool Browser::handleVim(QKeyEvent *ke)
 	}
 }
 
+/* Hint mode owns every bare key: letters narrow the match, Backspace edits. */
+bool Browser::handleHintKey(QKeyEvent *ke)
+{
+	if (ke->key() == Qt::Key_Backspace) {
+		runJs(QStringLiteral("__nibHintKey('BS')"));
+		return true;
+	}
+	const QString t = ke->text().toLower();
+	if (t.size() == 1 && t.at(0) >= QLatin1Char('a') &&
+	    t.at(0) <= QLatin1Char('z'))
+		runJs(QStringLiteral("__nibHintKey('%1')").arg(t));
+	return true;
+}
+
+bool Browser::handleCaretKey(QKeyEvent *ke)
+{
+	static const QString allowed = QStringLiteral("hjklwbe0$vy");
+	const QString t = ke->text();
+	if (t.size() == 1 && allowed.contains(t.at(0)))
+		runJs(QStringLiteral("__nibCaretKey('%1')").arg(t));
+	return true;   /* caret mode swallows the rest of the bare keys */
+}
+
 bool Browser::eventFilter(QObject *obj, QEvent *ev)
 {
 	Q_UNUSED(obj);
@@ -1163,6 +1717,14 @@ bool Browser::eventFilter(QObject *obj, QEvent *ev)
 
 	if (ke->key() == Qt::Key_Escape) {
 		m_pendingG = false;
+		m_pendingY = false;
+		m_count = 0;
+		if (m_vimMode != VimNormal) {
+			m_vimMode = VimNormal;
+			runJs(QStringLiteral("__nibModeExit()"));
+			setStatus(QString());
+			return true;
+		}
 		if (m_mode != BarHidden) {
 			if (m_mode == BarFind)
 				findText(QString(), false);   /* clear highlights */
@@ -1183,6 +1745,10 @@ bool Browser::eventFilter(QObject *obj, QEvent *ev)
 	 */
 	if (m_bar->hasFocus())
 		return false;
+
+	/* An active hint overlay or page caret owns the bare keys. */
+	if (!ctrl && !alt && m_mode == BarHidden && m_vimMode != VimNormal)
+		return m_vimMode == VimHint ? handleHintKey(ke) : handleCaretKey(ke);
 
 	if (alt && !ctrl) {
 		if (ke->key() == Qt::Key_Left) {
@@ -1328,7 +1894,15 @@ static const char *usage =
 "vim keys (only when the page has no text field focused):\n"
 "  h j k l     scroll left/down/up/right      d / u     half page down / up\n"
 "  gg / G      top / bottom                   H / L     back / forward\n"
-"  / , n , N   find, next, previous           o         open URL bar\n"
+"  5j 3d ...   counts work on scroll keys     o         open URL bar\n"
+"  f / F       hint links: follow / new tab   gi        hint + focus a field\n"
+"  yy / yf     yank page URL / a link's URL   v         caret mode\n"
+"  / , n , N   find, next, previous\n"
+"\n"
+"caret mode (v): a text cursor on the page — h j k l w b e 0 $ move,\n"
+"v toggles visual (extend), y yanks the selection, Esc leaves. In hint\n"
+"mode type the label; Backspace edits, Esc cancels. Paste into a field:\n"
+"gi to focus it, then C-v.\n"
 "\n"
 "always:\n"
 "  C-g  URL bar      C-f  find        C-j / C-k  page down / up\n"
